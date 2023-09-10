@@ -1,6 +1,5 @@
 package com.example.projectambilight
 
-import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -14,7 +13,6 @@ import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
-import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.net.wifi.WifiManager
@@ -24,6 +22,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.text.format.Formatter
 import android.util.Log
+import android.view.PixelCopy
 import android.view.Surface
 import android.view.SurfaceControl
 import androidx.core.app.NotificationCompat
@@ -62,9 +61,6 @@ class ForegroundService : Service() {
     private lateinit var musicClientTCPSocket: Socket
 
     private lateinit var notificationInstance:Notification
-    private lateinit var mImageReader:ImageReader
-
-    private var mColorToSend = 0
 
     private var musicIp = ""
     private val musicPort = 50000
@@ -134,43 +130,6 @@ class ForegroundService : Service() {
         return null
     }
 
-    private inner class ImageAvailableListener : ImageReader.OnImageAvailableListener {
-        override fun onImageAvailable(reader: ImageReader) {
-            var image: Image? = null
-            var resizedBitmap: Bitmap? = null
-            try {
-                image = reader.acquireLatestImage()
-                if (image != null) {
-                    val planes = image.planes
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * resources.displayMetrics.widthPixels
-                    // create bitmap
-                    val bitmap = Bitmap.createBitmap(
-                        resources.displayMetrics.widthPixels + rowPadding / pixelStride,
-                        resources.displayMetrics.heightPixels,
-                        Bitmap.Config.ARGB_8888
-                    )
-
-                    //fill from buffer
-                    bitmap.copyPixelsFromBuffer(buffer)
-
-                    mColorToSend = getDominantColor(bitmap)
-
-                    sendRGBToSocket(mColorToSend)
-
-                    bitmap.recycle()
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                image?.close()
-            }
-        }
-    }
-
-    @SuppressLint("WrongConstant")
     fun setUpVirtualScreen(requestCode: Int, resultCode: Int, data: Intent) {
 
         //TODO: check if correct, might be causing problems
@@ -185,21 +144,17 @@ class ForegroundService : Service() {
 
         var surfaceControlBuilder = SurfaceControl.Builder()
         surfaceControlBuilder.setBufferSize(screenWidth, screenHeight)
-        surfaceControlBuilder.setFormat(PixelFormat.RGBA_8888)
+        surfaceControlBuilder.setFormat(PixelFormat. RGB_565)
         surfaceControlBuilder.setName("ScreenSaved")
         var surfaceControl = surfaceControlBuilder.build()
         surfaceScreen = Surface(surfaceControl)
 
-        mImageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
-
         virtualDisplay = mediaProjection.createVirtualDisplay(
             "ScreenCapture",
             screenWidth, screenHeight, displayMetrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
-            mImageReader!!.surface, null, Handler(Looper.getMainLooper())
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            surfaceScreen, null, Handler(Looper.getMainLooper())
         )
-
-        mImageReader!!.setOnImageAvailableListener(ImageAvailableListener(), Handler(Looper.getMainLooper()))
         semaphore.release()
     }
 
@@ -246,10 +201,28 @@ class ForegroundService : Service() {
         // Process the image as a Bitmap
         try {
             val displayMetrics = resources.displayMetrics
-            val screenWidth = displayMetrics.widthPixels
-            val screenHeight = displayMetrics.heightPixels
+            val screenWidth = 1
+            val screenHeight = 1
 
             var surfaceBitmap = Bitmap.createBitmap(screenWidth, screenHeight, Bitmap.Config.RGB_565)
+            PixelCopy.request(surfaceScreen, surfaceBitmap,
+                { copyResult ->
+                    if (copyResult == PixelCopy.SUCCESS)
+                    {
+                        val pixelColor = getDominantColor(surfaceBitmap)
+                        // Start the UDP broadcast
+                        GlobalScope.launch(Dispatchers.IO) {
+                            sendRGBToSocket(pixelColor)
+                        }
+                    }
+                    else
+                    {
+                        Log.e(TAG, "Error when pixel copying $copyResult")
+                    }
+                    surfaceBitmap.recycle()
+                },
+                Handler(Looper.getMainLooper())
+            )
         } catch (e: Exception)
         {
             Log.e(TAG, "Caught exception: $e")
@@ -264,7 +237,7 @@ class ForegroundService : Service() {
         val captureIntervalMs = 200 // Adjust the frame rate as needed
         timer.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
-
+                captureFrame()
             }
         }, 0, captureIntervalMs.toLong())
     }
