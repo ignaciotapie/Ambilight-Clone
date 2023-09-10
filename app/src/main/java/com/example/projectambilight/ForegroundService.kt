@@ -1,5 +1,6 @@
 package com.example.projectambilight
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -169,6 +170,7 @@ class ForegroundService : Service() {
         }
     }
 
+    @SuppressLint("WrongConstant")
     fun setUpVirtualScreen(requestCode: Int, resultCode: Int, data: Intent) {
 
         //TODO: check if correct, might be causing problems
